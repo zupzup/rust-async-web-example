@@ -3,6 +3,7 @@ extern crate envconfig_derive;
 extern crate envconfig;
 #[macro_use]
 extern crate slog;
+extern crate actix;
 extern crate actix_web;
 #[macro_use]
 extern crate failure;
@@ -12,7 +13,8 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 
-use actix_web::{http, server, App};
+use actix::System;
+use actix_web::{web, App, HttpServer};
 use failure::Error;
 use std::fs::File;
 use std::io::prelude::*;
@@ -62,6 +64,8 @@ fn get_credentials(config: &Config) -> Result<(String, String), Error> {
 }
 
 fn main() {
+    let mut sys = System::new("analyzer");
+
     let log = logging::setup_logging();
     let config = match Config::init() {
         Ok(v) => v,
@@ -71,43 +75,43 @@ fn main() {
         Ok(v) => v,
         Err(e) => panic!("Could not get credentials: {}", e),
     };
-    let jwt = match external::get_jwt(&api_key, &api_secret) {
+    info!(log, "Logging In...");
+    let sign_in_response = match sys.block_on(external::get_jwt(&api_key, &api_secret)) {
         Ok(v) => v,
         Err(e) => panic!("Could not get the JWT: {}", e),
     };
+    let jwt = sign_in_response.token;
+    let runner_log = log.clone();
     info!(log, "Server Started on localhost:8080");
-    server::new(move || {
-        App::with_state(AppState {
-            jwt: jwt.to_string(),
-            log: log.clone(),
-        })
-        .scope("/rest/v1", |v1_scope| {
-            v1_scope.nested("/activities", |activities_scope| {
-                activities_scope
-                    .resource("", |r| {
-                        r.method(http::Method::GET).f(handlers::get_activities);
-                        r.method(http::Method::POST)
-                            .with_config(handlers::create_activity, |cfg| {
-                                (cfg.0).1.error_handler(handlers::json_error_handler);
-                            })
-                    })
-                    .resource("/{activity_id}", |r| {
-                        r.method(http::Method::GET).with(handlers::get_activity);
-                        r.method(http::Method::DELETE)
-                            .with(handlers::delete_activity);
-                        r.method(http::Method::PATCH)
-                            .with_config(handlers::edit_activity, |cfg| {
-                                (cfg.0).1.error_handler(handlers::json_error_handler);
-                            });
-                    })
+    match HttpServer::new(move || {
+        App::new()
+            .data(AppState {
+                jwt: jwt.to_string(),
+                log: log.clone(),
             })
-        })
-        .resource("/health", |r| {
-            r.method(http::Method::GET).f(handlers::health)
-        })
-        .finish()
+            .service(
+                web::scope("/rest/v1").service(
+                    web::scope("/activities")
+                        .service(
+                            web::resource("")
+                                .route(web::get().to_async(handlers::get_activities))
+                                .route(web::post().to_async(handlers::create_activity)),
+                        )
+                        .service(
+                            web::resource("/{activity_id}")
+                                .route(web::get().to_async(handlers::get_activity))
+                                .route(web::delete().to_async(handlers::delete_activity))
+                                .route(web::patch().to_async(handlers::edit_activity)),
+                        ),
+                ),
+            )
+            .service(web::resource("/health").route(web::get().to(handlers::health)))
     })
     .bind("0.0.0.0:8080")
     .unwrap()
-    .run();
+    .run()
+    {
+        Ok(_) => info!(runner_log, "Server Stopped!"),
+        Err(e) => error!(runner_log, "Error running the server: {}", e),
+    };
 }

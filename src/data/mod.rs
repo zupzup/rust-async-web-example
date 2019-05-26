@@ -5,7 +5,7 @@ pub struct SignInResponse {
     pub token: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ActivitiesResponse {
     pub activities: Vec<ActivityResponse>,
 }

@@ -5,7 +5,8 @@ authors = ["mario zupan <mario@zupzup.org>"]
 edition = "2018"
 
 [dependencies]
-actix-web = "0.7.19"
+actix-web = "1.0.0"
+actix = "0.8.3"
 reqwest = "0.9.4"
 serde = "1.0"
 serde_derive = "1.0"

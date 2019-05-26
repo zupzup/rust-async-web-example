@@ -1,10 +1,10 @@
-use super::data::{
-    ActivitiesResponse, ActivityRequest, ActivityResponse, EditActivityRequest, ErrorListResponse,
-};
+use super::data::{ActivityRequest, EditActivityRequest};
 use super::external;
 use super::AppState;
-use actix_web::{error, Error, HttpRequest, HttpResponse, Json, Path, Responder};
+use actix_web::web::{Data, Json, Path};
+use actix_web::{error, HttpResponse, Responder};
 use failure::Fail;
+use futures::future::Future;
 
 #[derive(Fail, Debug)]
 pub enum AnalyzerError {
@@ -25,90 +25,94 @@ impl error::ResponseError for AnalyzerError {
                 .body("activity not found"),
         }
     }
+    fn render_response(&self) -> HttpResponse {
+        self.error_response()
+    }
 }
 
-pub fn health(_: &HttpRequest<AppState>) -> impl Responder {
+pub fn health() -> impl Responder {
     "OK".to_string()
 }
 
-pub fn json_error_handler(err: error::JsonPayloadError, _: &HttpRequest<AppState>) -> Error {
-    error::InternalError::from_response(
-        "",
-        HttpResponse::BadRequest()
-            .content_type("application/json")
-            .body(format!(r#"{{"error":"json error: {}"}}"#, err)),
-    )
-    .into()
-}
-
 pub fn get_activities(
-    req: &HttpRequest<AppState>,
-) -> Result<Json<ActivitiesResponse>, AnalyzerError> {
-    let jwt = &req.state().jwt;
-    let log = &req.state().log;
+    data: Data<AppState>,
+) -> impl Future<Item = HttpResponse, Error = AnalyzerError> {
+    let jwt = &data.jwt;
+    let log = data.log.clone();
     external::get_activities(jwt)
-        .map_err(|e| {
-            error!(log, "Get Activities ExternalServiceError {}", e);
+        .map_err(move |e| {
+            error!(log, "Get Activities ExternalServiceError: {}", e);
             AnalyzerError::ExternalServiceError
         })
-        .map(Json)
+        .and_then(|res| json_ok(&res))
 }
 
 pub fn get_activity(
-    (req, activity_id): (HttpRequest<AppState>, Path<String>),
-) -> Result<Json<ActivityResponse>, AnalyzerError> {
-    let jwt = &req.state().jwt;
-    let log = &req.state().log;
+    data: Data<AppState>,
+    activity_id: Path<String>,
+) -> impl Future<Item = HttpResponse, Error = AnalyzerError> {
+    let jwt = &data.jwt;
+    let log = data.log.clone();
     external::get_activity(&activity_id, jwt)
-        .map_err(|e| {
+        .map_err(move |e| {
             error!(log, "Get Activity Error: {}", e);
             e
         })
-        .map(Json)
+        .and_then(|res| json_ok(&res))
 }
 
 pub fn create_activity(
-    (req, activity): (HttpRequest<AppState>, Json<ActivityRequest>),
-) -> Result<Json<ActivityResponse>, AnalyzerError> {
-    let jwt = &req.state().jwt;
-    let log = &req.state().log;
+    data: Data<AppState>,
+    activity: Json<ActivityRequest>,
+) -> impl Future<Item = HttpResponse, Error = AnalyzerError> {
+    let jwt = &data.jwt;
+    let log = data.log.clone();
     info!(log, "creating activity {:?}", activity);
     external::create_activity(&activity, jwt)
-        .map_err(|e| {
+        .map_err(move |e| {
             error!(log, "Create Activity ExternalServiceError {}", e);
             AnalyzerError::ExternalServiceError
         })
-        .map(Json)
+        .and_then(|res| json_ok(&res))
 }
 
 pub fn edit_activity(
-    (req, activity, activity_id): (
-        HttpRequest<AppState>,
-        Json<EditActivityRequest>,
-        Path<String>,
-    ),
-) -> Result<Json<ActivityResponse>, AnalyzerError> {
-    let jwt = &req.state().jwt;
-    let log = &req.state().log;
+    data: Data<AppState>,
+    activity: Json<EditActivityRequest>,
+    activity_id: Path<String>,
+) -> impl Future<Item = HttpResponse, Error = AnalyzerError> {
+    let jwt = &data.jwt;
+    let log = data.log.clone();
     info!(log, "editing activity {:?}", activity);
     external::edit_activity(&activity_id, &activity, jwt)
-        .map_err(|e| {
+        .map_err(move |e| {
             error!(log, "Edit Activity ExternalServiceError {}", e);
             AnalyzerError::ExternalServiceError
         })
-        .map(Json)
+        .and_then(|res| json_ok(&res))
 }
 
 pub fn delete_activity(
-    (req, activity_id): (HttpRequest<AppState>, Path<String>),
-) -> Result<Json<ErrorListResponse>, AnalyzerError> {
-    let jwt = &req.state().jwt;
-    let log = &req.state().log;
+    data: Data<AppState>,
+    activity_id: Path<String>,
+) -> impl Future<Item = HttpResponse, Error = AnalyzerError> {
+    let jwt = &data.jwt;
+    let log = data.log.clone();
     info!(log, "deleting activity {}", activity_id);
     external::delete_activity(&activity_id, jwt)
-        .map_err(|e| {
+        .map_err(move |e| {
             error!(log, "Delete Activity ExternalServiceError {}", e);
             AnalyzerError::ExternalServiceError
         })
-        .map(Json)
+        .and_then(|res| json_ok(&res))
+}
+
+fn json_ok<T: ?Sized>(data: &T) -> Result<HttpResponse, AnalyzerError>
+where
+    T: serde::ser::Serialize,
+{
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(serde_json::to_string(&data).unwrap())
+        .into())
 }
